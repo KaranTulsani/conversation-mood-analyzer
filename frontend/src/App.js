@@ -118,7 +118,7 @@ function App() {
                     
                     <div className="card-body">
                       <p className="card-text">
-                        {item.sentence}
+                        {item.text}
                       </p>
                       
                       <div className="sentiment-badge">
