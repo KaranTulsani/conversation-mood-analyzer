@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import './App.css';
 
+const API_URL = process.env.REACT_APP_API_URL;
+
 function App() {
   const [text, setText] = useState("");
   const [results, setResults] = useState([]);
@@ -18,7 +20,7 @@ function App() {
       .filter(Boolean);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/predict", {
+      const res = await fetch(`${API_URL}/predict`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
