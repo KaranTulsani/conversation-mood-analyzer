@@ -1,11 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import torch
 import torch.nn.functional as F
 import re
+import gc
 from fastapi.middleware.cors import CORSMiddleware
-import os
 
 from sentence_transformers import SentenceTransformer
 from src.lstm_model import EmotionLSTM
@@ -16,14 +16,13 @@ from src.sentiment_map import SENTIMENT_LABELS
 # -------------------------------
 app = FastAPI(title="Conversation Sentiment API")
 
-# More permissive CORS for debugging - restrict in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "https://conversation-mood-analyzer.vercel.app",
         "https://conversation-mood-analyzer-git-main-karantulsanis-projects.vercel.app",
-        "https://*.vercel.app",  # Allow all Vercel preview deployments
+        "https://*.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -49,24 +48,45 @@ POSITIVE_WORDS = {
 }
 
 # -------------------------------
-# Load model & embedder ONCE
+# Lazy model loading (memory optimization)
 # -------------------------------
-try:
-    model = EmotionLSTM(
-        input_dim=384,
-        hidden_dim=128,
-        num_classes=3
-    )
-    model.load_state_dict(torch.load("data/processed/emotion_lstm.pt", map_location=torch.device('cpu')))
-    model.eval()
-    
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    print("✓ Models loaded successfully")
-except Exception as e:
-    print(f"✗ Error loading models: {e}")
-    # Create dummy model for testing if real model fails
-    model = None
-    embedder = None
+_model: Optional[EmotionLSTM] = None
+_embedder: Optional[SentenceTransformer] = None
+
+def get_model():
+    """Lazy load model only when needed"""
+    global _model
+    if _model is None:
+        try:
+            _model = EmotionLSTM(
+                input_dim=384,
+                hidden_dim=128,
+                num_classes=3
+            )
+            _model.load_state_dict(
+                torch.load("data/processed/emotion_lstm.pt", map_location=torch.device('cpu'))
+            )
+            _model.eval()
+            
+            # Free memory
+            gc.collect()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Model loading failed: {str(e)}")
+    return _model
+
+def get_embedder():
+    """Lazy load embedder only when needed"""
+    global _embedder
+    if _embedder is None:
+        try:
+            # Use smaller model for memory efficiency
+            _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            
+            # Free memory
+            gc.collect()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Embedder loading failed: {str(e)}")
+    return _embedder
 
 # -------------------------------
 # Request / Response schema
@@ -75,14 +95,14 @@ class ConversationRequest(BaseModel):
     conversation: List[str]
 
 # -------------------------------
-# Health check endpoint
+# Health check
 # -------------------------------
 @app.get("/")
-def health_check():
+def root():
     return {
         "status": "healthy",
         "service": "Conversation Sentiment API",
-        "models_loaded": model is not None and embedder is not None
+        "models_loaded": _model is not None and _embedder is not None
     }
 
 @app.get("/health")
@@ -100,11 +120,12 @@ def analyze_sentiment(request: ConversationRequest):
         if not sentences:
             raise HTTPException(status_code=400, detail="No conversation data provided")
         
-        # Check if models are loaded
-        if model is None or embedder is None:
-            raise HTTPException(status_code=503, detail="Models not loaded")
+        # Lazy load models
+        model = get_model()
+        embedder = get_embedder()
         
-        embeddings = embedder.encode(sentences)
+        # Process in smaller batches to reduce memory usage
+        embeddings = embedder.encode(sentences, batch_size=8, show_progress_bar=False)
         X = torch.tensor(embeddings, dtype=torch.float32).unsqueeze(0)
         
         with torch.no_grad():
@@ -129,14 +150,19 @@ def analyze_sentiment(request: ConversationRequest):
                 "sentiment": SENTIMENT_LABELS[pred]
             })
         
+        # Clean up tensors
+        del X, logits, probs, embeddings
+        gc.collect()
+        
         return {"results": results}
     
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
+    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
