@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+
+# ML
+*.pt
+
+# Node
+node_modules/
+
+# Build
+build/
+dist/
+
+# OS
+.DS_Store
