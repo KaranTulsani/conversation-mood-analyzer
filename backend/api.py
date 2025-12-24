@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import re
 import gc
+import os
 from fastapi.middleware.cors import CORSMiddleware
 
 from sentence_transformers import SentenceTransformer
@@ -16,17 +17,20 @@ from src.sentiment_map import SENTIMENT_LABELS
 # -------------------------------
 app = FastAPI(title="Conversation Sentiment API")
 
+# CORS - Must be configured before any routes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001", 
         "https://conversation-mood-analyzer.vercel.app",
         "https://conversation-mood-analyzer-git-main-karantulsanis-projects.vercel.app",
-        "https://*.vercel.app",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # -------------------------------
@@ -67,8 +71,6 @@ def get_model():
                 torch.load("data/processed/emotion_lstm.pt", map_location=torch.device('cpu'))
             )
             _model.eval()
-            
-            # Free memory
             gc.collect()
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Model loading failed: {str(e)}")
@@ -79,10 +81,7 @@ def get_embedder():
     global _embedder
     if _embedder is None:
         try:
-            # Use smaller model for memory efficiency
             _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-            
-            # Free memory
             gc.collect()
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Embedder loading failed: {str(e)}")
@@ -95,7 +94,7 @@ class ConversationRequest(BaseModel):
     conversation: List[str]
 
 # -------------------------------
-# Health check
+# Health check endpoints
 # -------------------------------
 @app.get("/")
 def root():
@@ -109,8 +108,17 @@ def root():
 def health():
     return {"status": "ok"}
 
+# Handle CORS preflight requests
+@app.options("/predict")
+async def predict_options():
+    return {}
+
+@app.options("/health")
+async def health_options():
+    return {}
+
 # -------------------------------
-# API Endpoint
+# Main prediction endpoint
 # -------------------------------
 @app.post("/predict")
 def analyze_sentiment(request: ConversationRequest):
@@ -150,7 +158,7 @@ def analyze_sentiment(request: ConversationRequest):
                 "sentiment": SENTIMENT_LABELS[pred]
             })
         
-        # Clean up tensors
+        # Clean up tensors to free memory
         del X, logits, probs, embeddings
         gc.collect()
         
@@ -163,6 +171,5 @@ def analyze_sentiment(request: ConversationRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
