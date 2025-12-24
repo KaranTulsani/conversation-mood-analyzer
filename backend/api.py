@@ -20,17 +20,10 @@ app = FastAPI(title="Conversation Sentiment API")
 # CORS - Must be configured before any routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001", 
-        "https://conversation-mood-analyzer.vercel.app",
-        "https://conversation-mood-analyzer-git-main-karantulsanis-projects.vercel.app",
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Regex for all Vercel domains
+    allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600,
+    allow_credentials=False,
 )
 
 # -------------------------------
