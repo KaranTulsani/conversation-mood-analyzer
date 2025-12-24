@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL;
@@ -7,12 +7,43 @@ function App() {
   const [text, setText] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [apiStatus, setApiStatus] = useState('checking');
+
+  // Check API health on component mount
+  useEffect(() => {
+    checkApiHealth();
+  }, []);
+
+  const checkApiHealth = async () => {
+    try {
+      const res = await fetch(`${API_URL}/health`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+      
+      if (res.ok) {
+        setApiStatus('connected');
+        setError(null);
+      } else {
+        setApiStatus('error');
+        setError('API is not responding correctly');
+      }
+    } catch (err) {
+      setApiStatus('error');
+      setError(`Cannot connect to API at ${API_URL}`);
+      console.error('API Health Check Error:', err);
+    }
+  };
 
   const analyzeConversation = async () => {
     if (!text.trim()) return;
     
     setLoading(true);
     setResults([]);
+    setError(null);
 
     const sentences = text
       .split(/\n/)
@@ -28,10 +59,18 @@ function App() {
         body: JSON.stringify({ conversation: sentences })
       });
 
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Server error: ${res.status}`);
+      }
+
       const data = await res.json();
       setResults(data.results);
+      setApiStatus('connected');
     } catch (err) {
-      alert("Backend not reachable");
+      console.error('Analysis Error:', err);
+      setError(err.message || "Backend not reachable. Please check if the API is running.");
+      setApiStatus('error');
     }
     setLoading(false);
   };
@@ -45,7 +84,7 @@ function App() {
         {/* Header Section */}
         <header className="header">
           <div className="header-title-row">
-            <div className="status-indicator" />
+            <div className={`status-indicator ${apiStatus === 'connected' ? 'active' : apiStatus === 'error' ? 'error' : 'checking'}`} />
             <h1 className="main-title">Mood Trajectory</h1>
           </div>
           
@@ -66,9 +105,21 @@ function App() {
             </div>
             <div className="stat-item">
               <span className="stat-label">STATUS:</span>
-              <span className="stat-value stat-active">● ACTIVE</span>
+              <span className="stat-value stat-active">
+                ● {apiStatus === 'connected' ? 'ACTIVE' : apiStatus === 'error' ? 'OFFLINE' : 'CHECKING...'}
+              </span>
             </div>
           </div>
+
+          {/* API Connection Warning */}
+          {apiStatus === 'error' && (
+            <div className="api-warning">
+              <strong>⚠ API Connection Issue:</strong> {error}
+              <button onClick={checkApiHealth} className="retry-btn">
+                Retry Connection
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Input Section */}
@@ -86,11 +137,17 @@ function App() {
           
           <button
             onClick={analyzeConversation}
-            disabled={loading || !text.trim()}
-            className={`analyze-btn ${loading || !text.trim() ? 'disabled' : ''}`}
+            disabled={loading || !text.trim() || apiStatus === 'error'}
+            className={`analyze-btn ${loading || !text.trim() || apiStatus === 'error' ? 'disabled' : ''}`}
           >
             {loading ? '◌ Analyzing...' : '→ Analyze Sentiment'}
           </button>
+          
+          {error && !loading && (
+            <div className="error-message">
+              {error}
+            </div>
+          )}
         </div>
 
         {/* Results Section */}
@@ -138,6 +195,8 @@ function App() {
         {/* Footer */}
         <footer className="footer">
           Conversation Mood Trajectory Analysis v1.0 • Built with React + FastAPI
+          <br />
+          <small>API: {API_URL || 'Not configured'}</small>
         </footer>
       </div>
     </div>

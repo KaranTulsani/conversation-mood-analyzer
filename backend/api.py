@@ -1,11 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import torch
 import torch.nn.functional as F
 import re
 from fastapi.middleware.cors import CORSMiddleware
-
+import os
 
 from sentence_transformers import SentenceTransformer
 from src.lstm_model import EmotionLSTM
@@ -16,17 +16,19 @@ from src.sentiment_map import SENTIMENT_LABELS
 # -------------------------------
 app = FastAPI(title="Conversation Sentiment API")
 
+# More permissive CORS for debugging - restrict in production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-    "http://localhost:3000",
-    "https://conversation-mood-analyzer.vercel.app"
+        "http://localhost:3000",
+        "https://conversation-mood-analyzer.vercel.app",
+        "https://conversation-mood-analyzer-git-main-karantulsanis-projects.vercel.app",
+        "https://*.vercel.app",  # Allow all Vercel preview deployments
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # -------------------------------
 # Text normalization
@@ -49,15 +51,22 @@ POSITIVE_WORDS = {
 # -------------------------------
 # Load model & embedder ONCE
 # -------------------------------
-model = EmotionLSTM(
-    input_dim=384,
-    hidden_dim=128,
-    num_classes=3
-)
-model.load_state_dict(torch.load("data/processed/emotion_lstm.pt"))
-model.eval()
-
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+try:
+    model = EmotionLSTM(
+        input_dim=384,
+        hidden_dim=128,
+        num_classes=3
+    )
+    model.load_state_dict(torch.load("data/processed/emotion_lstm.pt", map_location=torch.device('cpu')))
+    model.eval()
+    
+    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    print("✓ Models loaded successfully")
+except Exception as e:
+    print(f"✗ Error loading models: {e}")
+    # Create dummy model for testing if real model fails
+    model = None
+    embedder = None
 
 # -------------------------------
 # Request / Response schema
@@ -66,39 +75,68 @@ class ConversationRequest(BaseModel):
     conversation: List[str]
 
 # -------------------------------
+# Health check endpoint
+# -------------------------------
+@app.get("/")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "Conversation Sentiment API",
+        "models_loaded": model is not None and embedder is not None
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+# -------------------------------
 # API Endpoint
 # -------------------------------
 @app.post("/predict")
 def analyze_sentiment(request: ConversationRequest):
-    sentences = request.conversation
-
-    embeddings = embedder.encode(sentences)
-    X = torch.tensor(embeddings, dtype=torch.float32).unsqueeze(0)
-
-    with torch.no_grad():
-        logits = model(X)
-        probs = F.softmax(logits, dim=-1).squeeze(0)
-
-    results = []
-
-    for i, sentence in enumerate(sentences):
-        pred = torch.argmax(probs[i]).item()
-        words = normalize_words(sentence)
-
-        # Override neutral if strong lexical cue
-        if pred == 0:
-            if words & NEGATIVE_WORDS:
-                pred = 1
-            elif words & POSITIVE_WORDS:
-                pred = 2
-
-        results.append({
-            "text": sentence,
-            "sentiment": SENTIMENT_LABELS[pred]
-        })
-
-    return {"results": results}
+    try:
+        sentences = request.conversation
+        
+        if not sentences:
+            raise HTTPException(status_code=400, detail="No conversation data provided")
+        
+        # Check if models are loaded
+        if model is None or embedder is None:
+            raise HTTPException(status_code=503, detail="Models not loaded")
+        
+        embeddings = embedder.encode(sentences)
+        X = torch.tensor(embeddings, dtype=torch.float32).unsqueeze(0)
+        
+        with torch.no_grad():
+            logits = model(X)
+            probs = F.softmax(logits, dim=-1).squeeze(0)
+        
+        results = []
+        
+        for i, sentence in enumerate(sentences):
+            pred = torch.argmax(probs[i]).item()
+            words = normalize_words(sentence)
+            
+            # Override neutral if strong lexical cue
+            if pred == 0:
+                if words & NEGATIVE_WORDS:
+                    pred = 1
+                elif words & POSITIVE_WORDS:
+                    pred = 2
+            
+            results.append({
+                "text": sentence,
+                "sentiment": SENTIMENT_LABELS[pred]
+            })
+        
+        return {"results": results}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
